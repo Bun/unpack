@@ -1,0 +1,15 @@
+
+There's still a lot to be done to make unpack actually good.
+
+- Option to unpack single file to current directory
+- Parameter for top directory override
+- Optionally delete (after verify) archive?
+- Might not always work with archives starting with `-'
+- Make extracting non-verbose unless user wants it to be
+- To avoid dealing with all the retarded listing formats, maybe just unpack to a
+  temporary directory and then move based on file contents.
+
+
+Future:
+- File name encodings
+

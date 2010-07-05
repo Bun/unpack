@@ -1,0 +1,218 @@
+#!/usr/bin/env python
+# coding: utf-8
+# BSD License (cf. COPYING)
+
+from optparse import OptionParser
+
+import subprocess
+import re
+import os
+
+
+def parse_simple(lines):
+    """ Verbatim """
+    return filter(None, lines)
+
+
+
+def parse_p7zip(lines):
+    """
+    p7zip output are chunks separated by
+    empty lines
+
+    - infoChunk (copyright, version, archive info)
+    - contents
+    """
+    infoChunk = False
+    values = {}
+
+    for line in lines:
+        line = line.rstrip()
+
+        if not infoChunk:
+            # XXX: This may vary from version to version
+            if line == '----------':
+                infoChunk = True
+
+            continue
+
+        if line == '':
+            if not values:
+                continue
+
+            # Only return non-directories
+            if int(values['size']):
+                yield values['path']
+
+            values = {}
+
+        else:
+            k, v = line.split('=', 1)
+            # XXX: In case of directory names with a leading space,
+            #  this will fail horribly.
+            values[k.rstrip().lower()] = v.lstrip()
+
+    assert infoChunk, 'Failed to parse p7zip output'
+
+
+def parse_unzip(lines):
+    # size date filename
+    format = re.compile(r'^[ ]*(?P<size>\d+)'
+        r'[ ]+\d\d-\d\d-\d{2,4} \d\d:\d\d'
+        r'[ ]+(?P<file>.+)$')
+
+    for line in lines:
+        m = format.search(line)
+        assert m, 'Failed to parse unzip output ' + line
+        yield m.group('file')
+
+
+formats = {
+    'zip': {
+        'unpack': 'unzip -d %(dir)s %(file)s'.split(),
+        'lines': 'unzip -qq -l %(file)s'.split(),
+        'parse': parse_unzip,
+    },
+
+    '7z': {
+        'unpack': '7z x -o%(dir)s -bd -- %(file)s'.split(),
+        'lines': '7z l -slt -- %(file)s'.split(),
+        'parse': parse_p7zip,
+    },
+
+    'tar': {
+        # Maybe only -v if verbose is set.
+        'unpack': 'tar xf %(file)s -C %(dir)s'.split(), #-v
+        'lines': 'tar tf %(file)s'.split(),
+        'parse': parse_simple,
+    },
+}
+
+alias = {
+    'rar': '7z',
+    'cab': '7z',
+    #'gz': 'tar',
+    #'bz2': 'tar',
+}
+
+
+def warn(msg):
+    print msg
+
+
+def verbose(msg):
+    if options.verbose:
+        print msg
+
+
+makeCommand = lambda cline, **kw: [arg % kw for arg in cline]
+
+
+def runCommand(cmd, pipe=False):
+    verbose('Running: %s' % (cmd,))
+    params = {}
+
+    if pipe:
+        params['stdout'] = subprocess.PIPE
+
+    return subprocess.Popen(cmd, **params)
+
+
+def findTopDir(files):
+    hasTop, topdir = False, None
+    first = True
+
+    for file in files:
+        file = file.lstrip('/')
+        print repr(file)
+
+        if first:
+            first = False
+
+            if '/' in file:
+                dirs = file.split('/')
+                hasTop, topdir = True, dirs[0] + '/'
+
+            else:
+                return False, None
+
+        # Verify
+        if not file.startswith(topdir):
+            hasTop = False
+            break
+
+    return hasTop, topdir
+
+
+
+def unpackArchive(fmt, file, dir):
+    cmd = runCommand(makeCommand(fmt['unpack'], file=file, dir=dir))
+    cmd.wait()
+    
+    if cmd.returncode:
+        raise ValueError, 'command returned %d' % (cmd.returncode,)
+
+
+def getFiles(fmt, file):
+    cmd = runCommand(makeCommand(fmt['lines'], file=file), pipe=True)
+    stdout, _ = cmd.communicate()
+    cmd.wait()
+
+    if cmd.returncode:
+        raise ValueError, 'command returned %d' % (cmd.returncode,)
+
+    return fmt['parse'](stdout.split('\n'))
+
+
+if __name__ == '__main__':
+    parser = OptionParser()
+    parser.add_option('-n', '--dry-run', dest='dry_run',
+                        action='store_true',
+                        default=False,
+                        help='do not unpack archive')
+    parser.add_option('-v', '--verbose', dest='verbose',
+                        action='store_true',
+                        default=False,
+                        help='verbose output')
+    options, args = parser.parse_args()
+
+    if not args:
+        parser.print_help()
+        exit()
+
+    for file in args:
+        scan = file.split('/')[-1].split('.')
+        assert len(scan) > 1
+        scan.reverse()
+        ok = False
+
+        # Don't test anything but the last two extensions
+        for i, ext in enumerate(scan[:2]):
+            ext = alias.get(*[ext.lower()]*2)
+
+            if ext in formats:
+                fmt = formats[ext]
+                hasTop, td = findTopDir(getFiles(fmt, file))
+
+                if hasTop:
+                    unpack = '.'
+                else:
+                    td = unpack = '.'.join(reversed(scan[i + 1:]))
+                    
+                verbose('Testing if %s exists' % (td, ))
+    
+                if os.path.exists(td):
+                    warn('%s already exists!' % (td,))
+                    raise Exception
+
+                verbose('Unpacking to %s' % (unpack,))
+
+                if not options.dry_run:
+                    unpackArchive(fmt, file, unpack)
+
+                ok = True
+                break
+
+        if not ok:
+            warn('File not unpacked: %s' % (file,))
+
