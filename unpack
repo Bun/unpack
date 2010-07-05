@@ -231,6 +231,10 @@ if __name__ == '__main__':
         topdir = topdir_extract(unpacker.files())
 
         if topdir is not False:
+            if os.path.exists(topdir):
+                warn('%r already exists!' % (topdir,))
+                raise Exception
+
             path = '.'
             verbose('Archive has valid topdir %r' % (topdir, ))
 
