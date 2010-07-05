@@ -51,7 +51,7 @@ class Untar(object):
 makeCommand = lambda cline, **kw: [arg % kw for arg in cline]
 
 
-def runCommand(cmd, pipe=False):
+def command_run(cmd, pipe=False):
     verbose('Running: %s' % (cmd,))
     params = {}
 
@@ -71,7 +71,7 @@ class UnpackGeneric(object):
 
 
     def files(self):
-        cmd = runCommand(makeCommand(self._lines.split(), file=self.filename),
+        cmd = command_run(makeCommand(self._lines.split(), file=self.filename),
             pipe=True)
         stdout, _ = cmd.communicate()
         cmd.wait()
@@ -83,7 +83,7 @@ class UnpackGeneric(object):
 
 
     def unpack(self, path):
-        cmd = runCommand(makeCommand(self._unpack.split(),
+        cmd = command_run(makeCommand(self._unpack.split(),
             file=self.filename, dir=path))
         cmd.wait()
 
@@ -168,29 +168,27 @@ def verbose(msg):
 
 def topdir_extract(files):
     """ Given a set of files, find the common parent directory """
-    hasTop, topdir = False, None
+    topdir = False
     first = True
 
     for file in files:
         file = file.lstrip('/')
-        print repr(file)
 
         if first:
             first = False
 
             if '/' in file:
                 dirs = file.split('/')
-                hasTop, topdir = True, dirs[0] + '/'
+                topdir = dirs[0] + '/'
 
             else:
-                return False, None
+                return False
 
         # Verify
         if not file.startswith(topdir):
-            hasTop = False
-            break
+            return False
 
-    return hasTop, topdir
+    return topdir
 
 
 def format_detect(filename):
@@ -208,6 +206,7 @@ def format_detect(filename):
             return archive, formats[ext_lwr]
 
     return None, False
+
 
 if __name__ == '__main__':
     parser = OptionParser()
@@ -229,20 +228,21 @@ if __name__ == '__main__':
         archive, fmt = format_detect(file)
         assert fmt, 'Unsupported file format'
         unpacker = fmt(file)
-        hasTop, td = topdir_extract(unpacker.files())
+        topdir = topdir_extract(unpacker.files())
 
-        if hasTop:
+        if topdir is not False:
             path = '.'
+            verbose('Archive has valid topdir %r' % (topdir, ))
 
         else:
             path = archive
-            verbose('Testing if %s exists' % (path, ))
+            verbose('Testing if %r exists' % (path, ))
 
             if os.path.exists(path):
-                warn('%s already exists!' % (path,))
+                warn('%r already exists!' % (path,))
                 raise Exception
 
-        verbose('Unpacking to %s' % (path,))
+        verbose('Unpacking to %r' % (path,))
 
         if not options.dry_run:
             unpacker.unpack(path)
