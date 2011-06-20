@@ -4,250 +4,169 @@
 
 from optparse import OptionParser
 
-import subprocess
-import re
 import os
-
-import zipfile
+import re
+import subprocess
 import tarfile
+import tempfile
+import zipfile
 
 
-class Unzip(object):
-    def __init__(self, filename):
-        self.filename = filename
-        self.zip = zipfile.ZipFile(filename, 'r')
+def unzip(archive, path):
+    zf = zipfile.ZipFile(archive, 'r')
+
+    for fname in zf.infolist():
+        zf.extract(fname, path)
 
 
-    def files(self):
-        return (f.filename for f in self.zip.infolist())
+def untar(archive, path):
+    tf = tarfile.open(archive, 'r')
+    tf.extractall(path)
 
 
-    def unpack(self, path):
-        for f in self.zip.infolist():
-            self.zip.extract(f, path)
+def untar_cl(archive, path):
+    subprocess.check_call(('tar',  'xf', archive, '-C', path))
 
 
-class Untar(object):
-    def __init__(self, filename):
-        self.filename = filename
-        self.tar = tarfile.open(filename, 'r')
+def un7zip(archive, path):
+    subprocess.check_call(('7z',  'x', '-o' + path, '-bd', '--', archive))
 
 
-    def files(self):
-        for f in self.tar.getmembers():
-            if f.isdir():
-                yield f.name + '/'
-            else:
-                yield f.name
+formats = (
+    ('.zip', unzip),
+    ('.jar', unzip),
 
+    # Python untar
+    ('.tar', untar),
+    ('.tgz', untar),
+    ('.tar.gz', untar),
+    ('.tar.bz2', untar),
 
-    def unpack(self, path):
-        self.tar.extractall(path)
+    # System untar
+    ('.tar.lzma', untar_cl),
 
+    ('.7z', un7zip),
+    ('.rar', un7zip),
+    ('.cab', un7zip),
 
-#
-# Commandline based unpackers
-#
-makeCommand = lambda cline, **kw: [arg % kw for arg in cline]
-
-
-def command_run(cmd, pipe=False):
-    verbose('Running: %s' % (cmd,))
-    params = {}
-
-    if pipe:
-        params['stdout'] = subprocess.PIPE
-
-    return subprocess.Popen(cmd, **params)
-
-
-class UnpackGeneric(object):
-    _unpack = None
-    _lines = None
-
-
-    def __init__(self, filename):
-        self.filename = filename
-
-
-    def files(self):
-        cmd = command_run(makeCommand(self._lines.split(), file=self.filename),
-            pipe=True)
-        stdout, _ = cmd.communicate()
-        cmd.wait()
-
-        if cmd.returncode:
-            raise ValueError, 'command returned %d' % (cmd.returncode,)
-
-        return self._parse(stdout.split('\n'))
-
-
-    def unpack(self, path):
-        cmd = command_run(makeCommand(self._unpack.split(),
-            file=self.filename, dir=path))
-        cmd.wait()
-
-        if cmd.returncode:
-            raise ValueError, 'command returned %d' % (cmd.returncode,)
-
-
-    def _parse(self, lines):
-        raise NotImplementedError
-
-
-class UnpackP7Zip(UnpackGeneric):
-    _unpack = '7z x -o%(dir)s -bd -- %(file)s'
-    _lines = '7z l -slt -- %(file)s'
-
-
-    def _parse(self, lines):
-        """
-        p7zip output are chunks separated by
-        empty lines
-    
-        - infoChunk (copyright, version, archive info)
-        - contents
-        """
-        infoChunk = False
-        values = {}
-    
-        for line in lines:
-            line = line.rstrip()
-    
-            if not infoChunk:
-                # XXX: This may vary from version to version
-                if line == '----------':
-                    infoChunk = True
-    
-                continue
-    
-            if line == '':
-                if not values:
-                    continue
-    
-                # Only return non-directories
-                if int(values['size']):
-                    yield values['path']
-    
-                values = {}
-    
-            else:
-                k, v = line.split('=', 1)
-                # XXX: In case of directory names with a leading space,
-                #  this will fail horribly.
-                values[k.rstrip().lower()] = v.lstrip()
-    
-        assert infoChunk, 'Failed to parse p7zip output'
-
-
-formats = {
-    'zip': Unzip,
-    '7z': UnpackP7Zip,
-    'tar': Untar,
-}
-
-alias = {
-    'rar': '7z',
-    'cab': '7z',
-    'tgz': 'tar',
-}
-
-
-#
-# CLI
-#
-
-def warn(msg):
-    print msg
-
-
-def verbose(msg):
-    if options.verbose:
-        print msg
-
-
-def topdir_extract(files):
-    """ Given a set of files, find the common parent directory """
-    topdir = False
-    first = True
-
-    for file in files:
-        file = file.lstrip('/')
-
-        if first:
-            first = False
-
-            if '/' in file:
-                dirs = file.split('/')
-                topdir = dirs[0] + '/'
-
-            else:
-                return False
-
-        # Verify
-        if not file.startswith(topdir):
-            return False
-
-    return topdir
+    #('.gz', ungz),
+    #('.bz2', unbzip2),
+    #('.lzma', unlzma),
+)
 
 
 def format_detect(filename):
-    scan = filename.split('/')[-1].split('.')
-    assert len(scan) > 1
-    scan.reverse()
+    ''' Determine the unpack function by checking the extension '''
+    scan = filename.lower()
 
-    # Don't test anything but the last two extensions
-    for i, ext in enumerate(scan[:2]):
-        ext_lwr = ext.lower()
-        ext_lwr = alias.get(ext_lwr, ext_lwr)
-
-        if ext_lwr in formats:
-            archive = '.'.join(reversed(scan[i+1:]))
-            return archive, formats[ext_lwr]
+    for ext, unpacker in formats:
+        if scan.endswith(ext):
+            archive_name = os.path.basename(filename)[:-len(ext)]
+            return archive_name, unpacker
 
     return None, False
 
 
+def unpack(filename, options):
+    path = options.directory or '.'
+
+    # Determine archive type
+    archive_name, unpacker = format_detect(filename)
+    assert unpacker, 'Unsupported file format'
+
+    # Unpack that stuff
+    temporary_path = tempfile.mkdtemp(prefix='.unpack', dir=path)
+
+    if options.verbose:
+        print 'Extracting to', temporary_path
+
+    unpacker(filename, temporary_path)
+
+    # Figure out directory name
+    archive_files = os.listdir(temporary_path)
+
+    if len(archive_files) == 1:
+        file_path = os.path.join(temporary_path, archive_files[0])
+
+        if not os.path.isdir(file_path) and not options.force_directory:
+            # Archive is a single file
+            target = os.path.join(path, archive_files[0])
+
+            if os.path.exists(target):
+                raise ValueError, 'Refusing to overwrite %r' % (target,)
+
+            os.rename(file_path, target)
+            os.rmdir(temporary_path)
+            return
+
+        # Archive has a single top directory
+        source = file_path
+
+        if options.basename is not None:
+            target = os.path.join(path, options.basename)
+            unlink_temp = False
+
+        else:
+            target = os.path.join(path, archive_files[0])
+            unlink_temp = True
+
+    else:
+        assert options.basename is None, 'TODO'
+        assert archive_name, 'No archive name'
+
+        # Archive has multiple files, but no common parent directory
+        source = temporary_path
+        target = os.path.join(path, archive_name)
+        unlink_temp = False
+
+    if options.verbose:
+        print 'Renaming %s to %s' % (source, target)
+    else:
+        print 'Extracted %s to %s' % (filename, target)
+
+    if os.path.exists(target):
+        # TODO: option to clean up temporary_path
+        print '!!! Refusing to overwrite %s' % (target,)
+        print '!!! Unpacked to %s' % (temporary_path,)
+        return
+
+    os.rename(source, target)
+
+    if unlink_temp:
+        os.rmdir(temporary_path)
+
+
 if __name__ == '__main__':
     parser = OptionParser()
-    parser.add_option('-n', '--dry-run', dest='dry_run',
-                        action='store_true',
-                        default=False,
-                        help='do not unpack archive')
-    parser.add_option('-v', '--verbose', dest='verbose',
-                        action='store_true',
-                        default=False,
-                        help='verbose output')
+
+    parser.add_option('-v', '--verbose',
+        dest='verbose',
+        action='store_true',
+        default=False,
+        help='verbose output')
+
+    parser.add_option('-x', '--force-directory',
+        dest='force_directory',
+        action='store_true',
+        default=False,
+        help='always extract files to a directory, even for single file archives')
+
+    parser.add_option('-p', '--path', metavar='DIRECTORY',
+        dest='directory',
+        default=None,
+        help='unpack in directory (default: .)')
+
+    parser.add_option('-d', '--directory', metavar='DIRECTORY',
+        dest='basename',
+        default=None,
+        help='override archive base path')
+
     options, args = parser.parse_args()
 
     if not args:
         parser.print_help()
         exit()
 
-    for file in args:
-        archive, fmt = format_detect(file)
-        assert fmt, 'Unsupported file format'
-        unpacker = fmt(file)
-        topdir = topdir_extract(unpacker.files())
-
-        if topdir is not False:
-            if os.path.exists(topdir):
-                warn('%r already exists!' % (topdir,))
-                raise Exception
-
-            path = '.'
-            verbose('Archive has valid topdir %r' % (topdir, ))
-
-        else:
-            path = archive
-            verbose('Using %r as topdir' % (path, ))
-
-            if os.path.exists(path):
-                warn('%r already exists!' % (path,))
-                raise Exception
-
-        verbose('Unpacking to %r' % (path,))
-
-        if not options.dry_run:
-            unpacker.unpack(path)
+    for filename in args:
+        unpack(filename, options)
 
