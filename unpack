@@ -78,7 +78,7 @@ def unpack(filename, options):
     temporary_path = tempfile.mkdtemp(prefix='.unpack', dir=path)
 
     if options.verbose:
-        print 'Extracting to', temporary_path
+        print('Extracting to {}'.format(temporary_path))
 
     unpacker(filename, temporary_path)
 
@@ -120,14 +120,14 @@ def unpack(filename, options):
         unlink_temp = False
 
     if options.verbose:
-        print 'Renaming %s to %s' % (source, target)
+        print('Renaming {} to {}'.format(source, target))
     else:
-        print 'Extracted %s to %s' % (filename, target)
+        print('Extracted {} to {}'.format(filename, target))
 
     if os.path.exists(target):
         # TODO: option to clean up temporary_path
-        print '!!! Refusing to overwrite %s' % (target,)
-        print '!!! Unpacked to %s' % (temporary_path,)
+        print('!!! Refusing to overwrite {}'.format(target))
+        print('!!! Unpacked to {}'.format(temporary_path))
         return
 
     os.rename(source, target)
@@ -169,4 +169,3 @@ if __name__ == '__main__':
 
     for filename in args:
         unpack(filename, options)
-
