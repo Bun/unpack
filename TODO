@@ -1,11 +1,8 @@
-
 There's still a lot to be done to make unpack actually good.
 
-- Support non-archive foo.{gz|bz2|lzma}
 - Optionally delete (after verify) archive?
 - Might not always work with archives starting with `-'
 - Make extracting non-verbose unless user wants it to be
 
 Future:
 - File name encodings
-

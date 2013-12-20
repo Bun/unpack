@@ -1,70 +1,130 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # coding: utf-8
 # BSD License (cf. COPYING)
 
 from optparse import OptionParser
 
 import os
-import re
 import subprocess
 import tarfile
 import tempfile
 import zipfile
 
 
-def unzip(archive, path):
+def unzip(archive, path, verbose):
     zf = zipfile.ZipFile(archive, 'r')
 
     for fname in zf.infolist():
+        if verbose:
+            print('Unzipping {}'.format(fname.filename))
+
         zf.extract(fname, path)
 
 
-def untar(archive, path):
+def untar(archive, path, verbose):
     tf = tarfile.open(archive, 'r')
     tf.extractall(path)
 
 
-def untar_cl(archive, path):
-    subprocess.check_call(('tar',  'xf', archive, '-C', path))
+tar_ext_args = {
+    'tgz': '--gzip',
+    'gz': '--gzip',
+    'tbz': '--bzip2',
+    'bz2': '--bzip2',
+    'lzma': '--lzma',
+    'xz': '--xz',
+}
 
 
-def un7zip(archive, path):
-    subprocess.check_call(('7z',  'x', '-o' + path, '-bd', '--', archive))
+def untar_cl(archive, path, verbose):
+    """ Use system tar to unpack the archive
+    Could potentially break with files starting with a - """
+    flags = 'v' if verbose else ''
+    ext = archive.rsplit('.', 1)[-1].lower()
+
+    args = ['tar',  '-x' + flags + 'f', archive]
+
+    if ext in tar_ext_args:
+        args.append(tar_ext_args[ext])
+
+    subprocess.check_call(args + ['-C', path])
+
+
+def un7zip(archive, path, verbose):
+    # verbose/silent not supported
+    subprocess.check_call(('7z', 'x', '-o' + path, '-bd', '--', archive))
+
+
+def unlzop(archive, path, verbose):
+    subprocess.check_call(['lzop', '-d', '-p' + path, '--', archive])
+
+
+def unpacker_dumb(command):
+    def unpack(archive, path, verbose):
+        """ Stupid tool; does not let you specify the output file
+        XXX: alternatively, we could just pipe to a file """
+        temp_file = os.path.join(path, archive)
+
+        if verbose:
+            print('Creating temporary link to {}'.format(temp_file))
+
+        # XZ should unlink this temporary file for us
+        os.link(archive, temp_file)
+        subprocess.check_call([command, '-d', '--', temp_file])
+
+    return unpack
 
 
 formats = (
     ('.zip', unzip),
     ('.jar', unzip),
 
-    # Python untar
-    ('.tar', untar),
-    ('.tgz', untar),
-    ('.tar.gz', untar),
-    ('.tar.bz2', untar),
-
-    # System untar
-    ('.tar.lzma', untar_cl),
-
     ('.7z', un7zip),
     ('.rar', un7zip),
     ('.cab', un7zip),
 
-    #('.gz', ungz),
-    #('.bz2', unbzip2),
-    #('.lzma', unlzma),
+    ('.lzo', unlzop),
+
+    ('.gz', unpacker_dumb('gzip')),
+    ('.bz2', unpacker_dumb('bzip2')),
+    ('.lzma', unpacker_dumb('lmza')),
+    ('.xz', unpacker_dumb('xz')),
 )
+
+if False:
+    # Python untar
+    formats = formats + (
+        ('.tar', untar),
+        ('.tgz', untar),
+        ('.tar.gz', untar),
+        ('.tar.bz2', untar),
+    )
+else:
+    # System untar
+    formats = formats + (
+        ('.tar', untar_cl),
+        ('.tgz', untar_cl),
+        ('.tar.gz', untar_cl),
+        ('.tar.bz2', untar_cl),
+        ('.tar.lzma', untar_cl),
+        ('.tar.xz', untar_cl),
+    )
 
 
 def format_detect(filename):
-    ''' Determine the unpack function by checking the extension '''
+    """ Determine the unpack function by checking the longest matching
+    extension """
     scan = filename.lower()
+    match = None
+    result = (None, False)
 
     for ext, unpacker in formats:
-        if scan.endswith(ext):
+        if scan.endswith(ext) and (match is None or len(ext) > len(match)):
             archive_name = os.path.basename(filename)[:-len(ext)]
-            return archive_name, unpacker
+            match = ext
+            result = (archive_name, unpacker)
 
-    return None, False
+    return result
 
 
 def unpack(filename, options):
@@ -80,7 +140,7 @@ def unpack(filename, options):
     if options.verbose:
         print('Extracting to {}'.format(temporary_path))
 
-    unpacker(filename, temporary_path)
+    unpacker(filename, temporary_path, options.verbose)
 
     # Figure out directory name
     archive_files = os.listdir(temporary_path)
@@ -93,10 +153,12 @@ def unpack(filename, options):
             target = os.path.join(path, archive_files[0])
 
             if os.path.exists(target):
-                raise ValueError, 'Refusing to overwrite %r' % (target,)
+                print('!!! Refusing to overwrite {}'.format(target))
+                print('!!! Unpacked to {}'.format(temporary_path))
+            else:
+                os.rename(file_path, target)
+                os.rmdir(temporary_path)
 
-            os.rename(file_path, target)
-            os.rmdir(temporary_path)
             return
 
         # Archive has a single top directory
@@ -139,27 +201,22 @@ def unpack(filename, options):
 if __name__ == '__main__':
     parser = OptionParser()
 
-    parser.add_option('-v', '--verbose',
-        dest='verbose',
-        action='store_true',
-        default=False,
-        help='verbose output')
+    parser.add_option('-v', '--verbose', dest='verbose', action='store_true',
+                      default=False, help='verbose output')
 
-    parser.add_option('-x', '--force-directory',
-        dest='force_directory',
-        action='store_true',
-        default=False,
-        help='always extract files to a directory, even for single file archives')
+    parser.add_option('-q', '--quiet', dest='verbose', action='store_false',
+                      default=True, help='only essential output')
 
-    parser.add_option('-p', '--path', metavar='DIRECTORY',
-        dest='directory',
-        default=None,
-        help='unpack in directory (default: .)')
+    parser.add_option('-x', '--force-directory', dest='force_directory',
+                      action='store_true', default=False, help='always extract'
+                      ' files to a directory, even for single file archives')
+
+    parser.add_option('-p', '--path', metavar='DIRECTORY', dest='directory',
+                      default=None, help='unpack in directory (default: .)')
 
     parser.add_option('-d', '--directory', metavar='DIRECTORY',
-        dest='basename',
-        default=None,
-        help='override archive base path')
+                      dest='basename', default=None,
+                      help='override archive base path')
 
     options, args = parser.parse_args()
 
