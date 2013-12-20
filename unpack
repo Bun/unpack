@@ -204,9 +204,6 @@ if __name__ == '__main__':
     parser.add_option('-v', '--verbose', dest='verbose', action='store_true',
                       default=False, help='verbose output')
 
-    parser.add_option('-q', '--quiet', dest='verbose', action='store_false',
-                      default=True, help='only essential output')
-
     parser.add_option('-x', '--force-directory', dest='force_directory',
                       action='store_true', default=False, help='always extract'
                       ' files to a directory, even for single file archives')
