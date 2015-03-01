@@ -2,27 +2,30 @@
 # coding: utf-8
 # BSD License (cf. COPYING)
 
+from __future__ import print_function
 from optparse import OptionParser
 
-import os
-import subprocess
-import tarfile
-import tempfile
-import zipfile
+from zipfile import ZipFile
+from subprocess import Popen, check_call
+from tarfile import open as open_tar
+from tempfile import mkdtemp
+
+from os import listdir, rename, rmdir
+from os.path import join, isdir, exists, basename
+
+print_verbose = print_info = lambda fmt, *args: print(fmt % args)
 
 
-def unzip(archive, path, verbose):
-    zf = zipfile.ZipFile(archive, 'r')
+def unzip(archive, archive_name, path, verbose):
+    zf = ZipFile(archive, 'r')
 
     for fname in zf.infolist():
-        if verbose:
-            print('Unzipping {}'.format(fname.filename))
-
+        print_verbose('Unzipping %s', fname.filename)
         zf.extract(fname, path)
 
 
-def untar(archive, path, verbose):
-    tf = tarfile.open(archive, 'r')
+def untar(archive, archive_name, path, verbose):
+    tf = open_tar(archive, 'r')
     tf.extractall(path)
 
 
@@ -36,7 +39,7 @@ tar_ext_args = {
 }
 
 
-def untar_cl(archive, path, verbose):
+def untar_cl(archive, archive_name, path, verbose):
     """ Use system tar to unpack the archive
     Could potentially break with files starting with a - """
     flags = 'v' if verbose else ''
@@ -47,30 +50,28 @@ def untar_cl(archive, path, verbose):
     if ext in tar_ext_args:
         args.append(tar_ext_args[ext])
 
-    subprocess.check_call(args + ['-C', path])
+    check_call(args + ['-C', path])
 
 
-def un7zip(archive, path, verbose):
+def un7zip(archive, archive_name, path, verbose):
     # verbose/silent not supported
-    subprocess.check_call(('7z', 'x', '-o' + path, '-bd', '--', archive))
+    check_call(('7z', 'x', '-o' + path, '-bd', '--', archive))
 
 
-def unlzop(archive, path, verbose):
-    subprocess.check_call(['lzop', '-d', '-p' + path, '--', archive])
+def unlzop(archive, archive_name, path, verbose):
+    check_call(['lzop', '-d', '-p' + path, '--', archive])
 
 
 def unpacker_dumb(command):
-    def unpack(archive, path, verbose):
-        """ Stupid tool; does not let you specify the output file
-        XXX: alternatively, we could just pipe to a file """
-        temp_file = os.path.join(path, archive)
+    def unpack(archive, archive_name, path, verbose):
+        """ Stupid tool; does not let you specify the output file """
 
-        if verbose:
-            print('Creating temporary link to {}'.format(temp_file))
+        temp_file = join(path, archive_name)
 
-        # XZ should unlink this temporary file for us
-        os.link(archive, temp_file)
-        subprocess.check_call([command, '-d', '--', temp_file])
+        writer = open(temp_file, 'xb')
+        p = Popen([command, '--keep', '--decompress', '--stdout',
+                   '--', archive], stdout=writer)
+        p.wait()
 
     return unpack
 
@@ -120,7 +121,7 @@ def format_detect(filename):
 
     for ext, unpacker in formats:
         if scan.endswith(ext) and (match is None or len(ext) > len(match)):
-            archive_name = os.path.basename(filename)[:-len(ext)]
+            archive_name = basename(filename)[:-len(ext)]
             match = ext
             result = (archive_name, unpacker)
 
@@ -135,67 +136,53 @@ def unpack(filename, options):
     assert unpacker, 'Unsupported file format'
 
     # Unpack that stuff
-    temporary_path = tempfile.mkdtemp(prefix='.unpack', dir=path)
+    temporary_path = mkdtemp(prefix='.unpack', dir=path)
+    print_verbose('Temporary path: %s', temporary_path)
 
-    if options.verbose:
-        print('Extracting to {}'.format(temporary_path))
-
-    unpacker(filename, temporary_path, options.verbose)
+    unpacker(filename, archive_name, temporary_path, options.verbose)
 
     # Figure out directory name
-    archive_files = os.listdir(temporary_path)
+    archive_files = listdir(temporary_path)
+    source = None
+    target = None
+    unlink_temp = True
 
     if len(archive_files) == 1:
-        file_path = os.path.join(temporary_path, archive_files[0])
+        source = join(temporary_path, archive_files[0])
+        target = join(path, archive_files[0])
 
-        if not os.path.isdir(file_path) and not options.force_directory:
+        if not isdir(source) and not options.force_directory:
             # Archive is a single file
-            target = os.path.join(path, archive_files[0])
+            print_verbose('Archive contains a single file')
 
-            if os.path.exists(target):
-                print('!!! Refusing to overwrite {}'.format(target))
-                print('!!! Unpacked to {}'.format(temporary_path))
-            else:
-                os.rename(file_path, target)
-                os.rmdir(temporary_path)
-
-            return
-
-        # Archive has a single top directory
-        source = file_path
-
-        if options.basename is not None:
-            target = os.path.join(path, options.basename)
-            unlink_temp = False
+        elif options.basename is not None:
+            # Archive has a single top directory
+            target = join(path, options.basename)
+            print_verbose('Archive contains a single directory;'
+                          ' using basename')
 
         else:
-            target = os.path.join(path, archive_files[0])
-            unlink_temp = True
+            print_verbose('Archive contains a single directory')
 
     else:
-        assert options.basename is None, 'TODO'
-        assert archive_name, 'No archive name'
-
         # Archive has multiple files, but no common parent directory
+        print_verbose('Archive has no common parent directory directory')
         source = temporary_path
-        target = os.path.join(path, archive_name)
+        target = join(path, options.basename or archive_name)
         unlink_temp = False
 
-    if options.verbose:
-        print('Renaming {} to {}'.format(source, target))
-    else:
-        print('Extracted {} to {}'.format(filename, target))
-
-    if os.path.exists(target):
+    if exists(target):
         # TODO: option to clean up temporary_path
-        print('!!! Refusing to overwrite {}'.format(target))
-        print('!!! Unpacked to {}'.format(temporary_path))
-        return
+        print_info('Target %s already exists; using %s', target, source)
+        target = source
 
-    os.rename(source, target)
+    else:
+        rename(source, target)
 
-    if unlink_temp:
-        os.rmdir(temporary_path)
+        if unlink_temp:
+            rmdir(temporary_path)
+
+    print_info('Unpacked to %s', target)
 
 
 if __name__ == '__main__':
@@ -220,6 +207,9 @@ if __name__ == '__main__':
     if not args:
         parser.print_help()
         exit()
+
+    if not options.verbose:
+        print_verbose = lambda fmt, *args: None
 
     for filename in args:
         unpack(filename, options)
