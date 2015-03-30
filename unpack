@@ -151,15 +151,25 @@ def unpack(filename, options):
         source = join(temporary_path, archive_files[0])
         target = join(path, archive_files[0])
 
-        if not isdir(source) and not options.force_directory:
-            # Archive is a single file
+        if not isdir(source) and options.force_directory:
+            print_verbose('Archive contains a single file'
+                          ' (forcing directory)')
+
+            source = temporary_path
+            unlink_temp = False
+
+            if options.basename is not None:
+                target = join(path, options.basename)
+            else:
+                target = join(path, archive_name)
+
+        elif not isdir(source):
             print_verbose('Archive contains a single file')
 
         elif options.basename is not None:
-            # Archive has a single top directory
-            target = join(path, options.basename)
             print_verbose('Archive contains a single directory;'
                           ' using basename')
+            target = join(path, options.basename)
 
         else:
             print_verbose('Archive contains a single directory')
